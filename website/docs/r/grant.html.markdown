@@ -61,6 +61,13 @@ resource "mysql_grant" "developer" {
   database = "app"
   roles    = ["${mysql_role.developer.name}"]
 }
+
+resource "mysql_grant" "developer" {
+  user      = "${mysql_user.jdoe.user}"
+  host      = "${mysql_user.jdoe.host}"
+  database  = "mysql.rds_kill_query" # set the procedure name here. Don't set table anywhere. NOTE: for revoking, only execute is supported. No other permissions are currently supported
+  procedure = true
+}
 ```
 
 ## Argument Reference
@@ -80,6 +87,7 @@ The following arguments are supported:
 * `roles` - (Optional) A list of rols to grant to the user. Conflicts with `privileges`.
 * `tls_option` - (Optional) An TLS-Option for the `GRANT` statement. The value is suffixed to `REQUIRE`. A value of 'SSL' will generate a `GRANT ... REQUIRE SSL` statement. See the [MYSQL `GRANT` documentation](https://dev.mysql.com/doc/refman/5.7/en/grant.html) for more. Ignored if MySQL version is under 5.7.0.
 * `grant` - (Optional) Whether to also give the user privileges to grant the same privileges to other users.
+* `procedure` - (Optional) Only set this to true if you're looking to GRANT EXECUTE on PROCEDURE <procedure_name>.
 
 ## Attributes Reference
 

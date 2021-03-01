@@ -89,6 +89,13 @@ func resourceGrant() *schema.Resource {
 				Default:  false,
 			},
 
+			"procedure": {
+				Type:     schema.TypeBool,
+				Optional: true,
+				ForceNew: true,
+				Default:  false,
+			},
+
 			"tls_option": {
 				Type:     schema.TypeString,
 				Optional: true,
@@ -190,8 +197,10 @@ func CreateGrant(d *schema.ResourceData, meta interface{}) error {
 
 	table := formatTableName(d.Get("table").(string))
 
-	if (!isRole || hasPrivs) && rolesGranted == 0 {
+	if (!isRole || hasPrivs) && rolesGranted == 0 && d.Get("procedure").(bool) == false {
 		grantOn = fmt.Sprintf(" ON %s.%s", database, table)
+	} else if (!isRole || hasPrivs) && rolesGranted == 0 && d.Get("procedure").(bool) == true {
+		grantOn = fmt.Sprintf(" ON PROCEDURE %s", d.Get("database").(string))
 	}
 
 	stmtSQL := fmt.Sprintf("GRANT %s%s TO %s",
@@ -371,7 +380,7 @@ func DeleteGrant(d *schema.ResourceData, meta interface{}) error {
 	privileges := d.Get("privileges").(*schema.Set)
 
 	var sql string
-	if !isRole && len(roles.List()) == 0 {
+	if !isRole && len(roles.List()) == 0 && d.Get("procedure").(bool) == false {
 		sql = fmt.Sprintf("REVOKE GRANT OPTION ON %s.%s FROM %s",
 			database,
 			table,
@@ -387,9 +396,12 @@ func DeleteGrant(d *schema.ResourceData, meta interface{}) error {
 	whatToRevoke := fmt.Sprintf("ALL ON %s.%s", database, table)
 	if len(roles.List()) > 0 {
 		whatToRevoke = flattenList(roles.List(), "'%s'")
-	} else if len(privileges.List()) > 0 {
+	} else if len(privileges.List()) > 0 && d.Get("procedure").(bool) == false {
 		privilegeList := flattenList(privileges.List(), "%s")
 		whatToRevoke = fmt.Sprintf("%s ON %s.%s", privilegeList, database, table)
+	} else if d.Get("procedure").(bool) == true {
+		// TODO: a bit hacky but will only revoke execute atm
+		whatToRevoke = fmt.Sprintf("EXECUTE ON PROCEDURE %s", d.Get("database").(string))
 	}
 
 	sql = fmt.Sprintf("REVOKE %s FROM %s", whatToRevoke, userOrRole)
