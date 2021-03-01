@@ -27,6 +27,12 @@ resource "mysql_user" "jdoe" {
 resource "mysql_user_password" "jdoe" {
   user    = "${mysql_user.jdoe.user}"
   pgp_key = "keybase:joestump"
+  password_policy {
+      length = 64
+      num_digits = 5
+      num_symbols = 5
+      allow_repeat = true
+  }
 }
 ```
 
@@ -40,6 +46,7 @@ The following arguments are supported:
 * `user` - (Required) The IAM user to associate with this access key.
 * `pgp_key` - (Required) Either a base-64 encoded PGP public key, or a keybase username in the form `keybase:some_person_that_exists`.
 * `host` - (Optional) The source host of the user. Defaults to `localhost`.
+* `password_policy` - (Optional) The password_policy you'd like to enforce for each user's password.
 
 ## Attributes Reference
 
