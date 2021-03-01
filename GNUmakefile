@@ -7,6 +7,7 @@ TERRAFORM_D?=~/.terraform.d
 GOOS?=$(shell go env GOOS)
 GOARCH?=$(shell go env GOARCH)
 PROVIDER_DIR?=$(TERRAFORM_D)/plugins/registry.terraform.io/kaplanmaxe/mysql/$(subst v,,$(VERSION))/$(GOOS)_$(GOARCH)
+PROVIDER_DIR_DEV?=$(TERRAFORM_D)/plugins/registry.terraform.io/kaplanmaxe/mysql/$(subst v,,$(VERSION))-dev/$(GOOS)_$(GOARCH)
 
 default: build
 
@@ -16,6 +17,10 @@ build: fmtcheck
 install: build
 	mkdir -p $(PROVIDER_DIR)
 	cp terraform-provider-mysql $(PROVIDER_DIR)/terraform-provider-mysql_$(VERSION)
+
+install-dev: build
+	mkdir -p $(PROVIDER_DIR_DEV)
+	cp terraform-provider-mysql $(PROVIDER_DIR_DEV)/terraform-provider-mysql_$(VERSION)-dev
 
 test: fmtcheck
 	go test -i $(TEST) || exit 1

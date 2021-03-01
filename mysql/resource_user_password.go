@@ -3,10 +3,14 @@ package mysql
 import (
 	"fmt"
 
-	"github.com/gofrs/uuid"
 	"github.com/hashicorp/go-version"
 	"github.com/hashicorp/terraform-plugin-sdk/helper/encryption"
 	"github.com/hashicorp/terraform-plugin-sdk/helper/schema"
+	"github.com/sethvargo/go-password/password"
+)
+
+const (
+	requiredPasswordLength = 32
 )
 
 func resourceUserPassword() *schema.Resource {
@@ -39,19 +43,91 @@ func resourceUserPassword() *schema.Resource {
 				Type:     schema.TypeString,
 				Computed: true,
 			},
+			"password_policy": {
+				Type:     schema.TypeSet,
+				Optional: true,
+				ForceNew: true,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"length": {
+							Type:     schema.TypeInt,
+							Optional: true,
+							Default:  64,
+							ForceNew: true,
+							ValidateFunc: func(v interface{}, k string) (ws []string, errors []error) {
+								value := v.(int)
+								if value < requiredPasswordLength {
+									errors = append(errors, fmt.Errorf("password_policy_length must be at least %d", requiredPasswordLength))
+								}
+
+								return
+							},
+						},
+						"allow_repeat": {
+							Type:     schema.TypeBool,
+							Optional: true,
+							Default:  true,
+							ForceNew: true,
+						},
+						"num_symbols": {
+							Type:     schema.TypeInt,
+							Optional: true,
+							Default:  5,
+							ForceNew: true,
+						},
+						"num_digits": {
+							Type:     schema.TypeInt,
+							Optional: true,
+							Default:  5,
+							ForceNew: true,
+						},
+					},
+				},
+			},
 		},
 	}
 }
 
 func SetUserPassword(d *schema.ResourceData, meta interface{}) error {
 	db := meta.(*MySQLConfiguration).Db
+	var (
+		passwordPolicyLength      int
+		passwordPolicyNumDigits   int
+		passwordPolicyNumSymbols  int
+		passwordPolicyAllowRepeat bool
+	)
+	if v, ok := d.GetOk("password_policy"); ok && v.(*schema.Set).Len() > 0 {
+		for _, tfMapRaw := range v.(*schema.Set).List() {
+			tfMap, ok := tfMapRaw.(map[string]interface{})
 
-	uuid, err := uuid.NewV4()
+			if !ok {
+				continue
+			}
+
+			if v, ok := tfMap["length"].(int); ok {
+				passwordPolicyLength = v
+			}
+
+			if v, ok := tfMap["num_digits"].(int); ok {
+				passwordPolicyNumDigits = v
+			}
+
+			if v, ok := tfMap["num_symbols"].(int); ok {
+				passwordPolicyNumSymbols = v
+			}
+
+			if v, ok := tfMap["allow_repeat"].(bool); ok {
+				passwordPolicyAllowRepeat = v
+			}
+		}
+	}
+
+	// TODO: make dynamic and allow user to set
+	password, err := password.Generate(passwordPolicyLength, passwordPolicyNumDigits, passwordPolicyNumSymbols, false, passwordPolicyAllowRepeat)
 	if err != nil {
 		return err
 	}
 
-	password := uuid.String()
 	pgpKey := d.Get("pgp_key").(string)
 	encryptionKey, err := encryption.RetrieveGPGKey(pgpKey)
 	if err != nil {
