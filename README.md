@@ -12,8 +12,8 @@ Usage
 terraform {
   required_providers {
     mysql = {
-      source  = "winebarrel/mysql"
-      version = "1.9.0-p6"
+      source  = "kaplanmaxe/mysql"
+      version = "1.9.1"
     }
   }
   required_version = ">= 0.13"

@@ -216,6 +216,20 @@ func serverVersionString(db *sql.DB) (string, error) {
 	return versionString, nil
 }
 
+func checkIfMariaDB(db *sql.DB) (bool, error) {
+	var versionString string
+	err := db.QueryRow("SELECT @@GLOBAL.version").Scan(&versionString)
+	if err != nil {
+		return false, err
+	}
+
+	if strings.Contains(strings.ToLower(versionString), "mariadb") {
+		return true, nil
+	}
+
+	return false, nil
+}
+
 func connectToMySQL(conf *MySQLConfiguration) (*sql.DB, error) {
 
 	dsn := conf.Config.FormatDSN()

@@ -70,8 +70,14 @@ func SetUserPassword(d *schema.ResourceData, meta interface{}) error {
 		return err
 	}
 
+	isMaria, err := checkIfMariaDB(db)
+	if err != nil {
+		return err
+	}
+
 	passSQL := fmt.Sprintf("'%s'", password)
-	if currentVersion.LessThan(requiredVersion) {
+	// MariaDB still relies on PASSWORD() helper
+	if currentVersion.LessThan(requiredVersion) || isMaria == true {
 		passSQL = fmt.Sprintf("PASSWORD(%s)", passSQL)
 	}
 
