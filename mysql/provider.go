@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
@@ -11,6 +12,10 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/hashicorp/go-version"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/secretsmanager"
 
 	"github.com/hashicorp/terraform-plugin-sdk/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/helper/schema"
@@ -31,6 +36,7 @@ type MySQLConfiguration struct {
 	MaxConnLifetime        time.Duration
 	MaxOpenConns           int
 	ConnectRetryTimeoutSec time.Duration
+	AWSRegion              string
 }
 
 func Provider() terraform.ResourceProvider {
@@ -48,18 +54,6 @@ func Provider() terraform.ResourceProvider {
 
 					return
 				},
-			},
-
-			"username": {
-				Type:        schema.TypeString,
-				Required:    true,
-				DefaultFunc: schema.EnvDefaultFunc("MYSQL_USERNAME", nil),
-			},
-
-			"password": {
-				Type:        schema.TypeString,
-				Optional:    true,
-				DefaultFunc: schema.EnvDefaultFunc("MYSQL_PASSWORD", nil),
 			},
 
 			"proxy": {
@@ -105,6 +99,53 @@ func Provider() terraform.ResourceProvider {
 				Optional: true,
 				Default:  300,
 			},
+
+			"aws_secret": {
+				Type:        schema.TypeMap,
+				Required:    true,
+				Description: "Get username and password from AWS secret",
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"secret_name": {
+							Type:        schema.TypeString,
+							Required:    true,
+							Description: "AWS secret name",
+							ValidateFunc: func(v interface{}, k string) (ws []string, errors []error) {
+								value := v.(string)
+								if value == "" {
+									errors = append(errors, fmt.Errorf("Secret name must not be an empty string"))
+								}
+			
+								return
+							},
+						},
+						"region": {
+							Type:        schema.TypeString,
+							Required:    true,
+							DefaultFunc: schema.EnvDefaultFunc("AWS_DEFAULT_REGION", nil),
+							Description: "AWS region name for all secrets",
+							ValidateFunc: func(v interface{}, k string) (ws []string, errors []error) {
+								value := v.(string)
+								if value == "" {
+									errors = append(errors, fmt.Errorf("Region must not be an empty string"))
+								}
+			
+								return
+							},
+						},
+						"username_key": {
+							Type:        schema.TypeString,
+							Required:    true,
+							Description: "json key in secret revision",
+						},
+						"password_key": {
+							Type:        schema.TypeString,
+							Required:    true,
+							Description: "json key in secret revision",
+						},
+					},
+				},
+			},
 		},
 
 		DataSourcesMap: map[string]*schema.Resource{
@@ -133,9 +174,27 @@ func providerConfigure(d *schema.ResourceData) (interface{}, error) {
 		proto = "unix"
 	}
 
+	var password string
+	var username string
+	var secretName string
+	var AWSRegion string
+
+	awsSecretConfig := d.Get("aws_secret")
+	secretConfig := awsSecretConfig.(map[string]interface{})
+	secretName = secretConfig["secret_name"].(string)
+	AWSRegion = secretConfig["region"].(string)
+	password, err := getValueFromSecret(secretName, AWSRegion, secretConfig["password_key"].(string))
+	if err != nil {
+		return nil, fmt.Errorf("Error getting secret value: %v", err)
+	}
+	username, err = getValueFromSecret(secretName, AWSRegion, secretConfig["username_key"].(string))
+	if err != nil {
+		return nil, fmt.Errorf("Error getting secret value: %v", err)
+	}
+
 	conf := mysql.Config{
-		User:                    d.Get("username").(string),
-		Passwd:                  d.Get("password").(string),
+		User:                    username,
+		Passwd:                  password,
 		Net:                     proto,
 		Addr:                    endpoint,
 		TLSConfig:               d.Get("tls").(string),
@@ -157,6 +216,7 @@ func providerConfigure(d *schema.ResourceData) (interface{}, error) {
 		MaxConnLifetime:        time.Duration(d.Get("max_conn_lifetime_sec").(int)) * time.Second,
 		MaxOpenConns:           d.Get("max_open_conns").(int),
 		ConnectRetryTimeoutSec: time.Duration(d.Get("connect_retry_timeout_sec").(int)) * time.Second,
+		AWSRegion:              AWSRegion,
 	}
 
 	db, err := connectToMySQL(mysqlConf)
@@ -171,6 +231,32 @@ func providerConfigure(d *schema.ResourceData) (interface{}, error) {
 }
 
 var identQuoteReplacer = strings.NewReplacer("`", "``")
+
+func getValueFromSecret(secretId string, region string, key string) (string, error) {
+	session, err := session.NewSession()
+	if err != nil {
+		return "", err
+	}
+	svc := secretsmanager.New(session, aws.NewConfig().WithRegion(region))
+	input := &secretsmanager.GetSecretValueInput{
+		SecretId:     aws.String(secretId),
+		VersionStage: aws.String("AWSCURRENT"),
+	}
+	result, err := svc.GetSecretValue(input)
+	if err != nil {
+		return "", err
+	}
+	var secretValue map[string]string
+	err = json.Unmarshal([]byte(*result.SecretString), &secretValue)
+	if err != nil {
+		return "", fmt.Errorf("Unmarshal error: %v. Check that secret value isn't clean", err)
+	}
+	password, exists := secretValue[key]
+	if !exists {
+		return "", fmt.Errorf("Key \"%s\" not found in the secret \"%s\"", key, secretId)
+	}
+	return password, nil
+}
 
 func makeDialer(d *schema.ResourceData) (proxy.Dialer, error) {
 	proxyFromEnv := proxy.FromEnvironment()

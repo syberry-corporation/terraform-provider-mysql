@@ -12,7 +12,7 @@ Usage
 terraform {
   required_providers {
     mysql = {
-      source  = "kaplanmaxe/mysql"
+      source  = "syberry-corporation/mysql"
       version = "1.9.4"
     }
   }

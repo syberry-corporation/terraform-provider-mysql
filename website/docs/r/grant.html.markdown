@@ -14,19 +14,35 @@ a user on a MySQL server.
 ## Granting Privileges to a User
 
 ```hcl
+# AWS secret value: {"jdoe_username": "<username>", "jdoe_password": "<password>"}
+
 resource "mysql_user" "jdoe" {
-  user               = "jdoe"
-  host               = "example.com"
-  plaintext_password = "password"
+  secret_name  = "rds-credentials"
+  username_key = "jdoe_username"
+  host         = "%"
+  password_key = "jdoe_password"
 }
 
 resource "mysql_grant" "jdoe" {
-  user       = "${mysql_user.jdoe.user}"
-  host       = "${mysql_user.jdoe.host}"
-  database   = "app"
-  privileges = ["SELECT", "UPDATE"]
+  secret_name  = mysql_user.jdoe.secret_name
+  username_key = mysql_user.jdoe.username_key
+  host         = mysql_user.jdoe.host
+  database     = "app"
+  privileges   = ["SELECT", "UPDATE"]
+  table        = "*"
+}
+
+resource "mysql_grant" "jdoe" {
+  secret_name  = mysql_user.jdoe.secret_name
+  username_key = mysql_user.jdoe.username_key
+  host         = mysql_user.jdoe.host
+  database     = "app2"
+  privileges   = ["ALL PRIVILEGES"]
+  table        = "pets"
 }
 ```
+
+~> **Note:** You can not create GRANT on nonexisting SQL table.
 
 ## Granting Privileges to a Role
 
@@ -78,7 +94,8 @@ resource "mysql_grant" "developer" {
 
 The following arguments are supported:
 
-* `user` - (Optional) The name of the user. Conflicts with `role`.
+* `secret_name` - (Required) Then name of AWS secret, where username is stored.
+* `username_key` - (Required) The key(field) in json of secret string.
 * `host` - (Optional) The source host of the user. Defaults to "localhost". Conflicts with `role`.
 * `role` - (Optional) The role to grant `privileges` to. Conflicts with `user` and `host`.
 * `database` - (Required) The database to grant privileges on.
@@ -92,3 +109,11 @@ The following arguments are supported:
 ## Attributes Reference
 
 No further attributes are exported.
+
+## Import
+
+To import `mysql_grant` you should use this format of id `SECRET_NAME@USER@HOST`
+
+```shell
+terraform import mysql_grant.grant rds-credentials@jdoe_username@%
+```
