@@ -6,8 +6,8 @@ VERSION=$(shell git describe --abbrev=0 --tag)
 TERRAFORM_D?=~/.terraform.d
 GOOS?=$(shell go env GOOS)
 GOARCH?=$(shell go env GOARCH)
-PROVIDER_DIR?=$(TERRAFORM_D)/plugins/registry.terraform.io/kaplanmaxe/mysql/$(subst v,,$(VERSION))/$(GOOS)_$(GOARCH)
-PROVIDER_DIR_DEV?=$(TERRAFORM_D)/plugins/registry.terraform.io/kaplanmaxe/mysql/$(subst v,,$(VERSION))-dev/$(GOOS)_$(GOARCH)
+PROVIDER_DIR?=$(TERRAFORM_D)/plugins/registry.terraform.io/syberry-corporation/mysql/$(subst v,,$(VERSION))/$(GOOS)_$(GOARCH)
+PROVIDER_DIR_DEV?=$(TERRAFORM_D)/plugins/registry.terraform.io/syberry-corporation/mysql/$(subst v,,$(VERSION))-dev/$(GOOS)_$(GOARCH)
 
 default: build
 

@@ -5,8 +5,6 @@ import (
 	"log"
 	"strings"
 
-	"errors"
-
 	"github.com/hashicorp/go-version"
 	"github.com/hashicorp/terraform-plugin-sdk/helper/schema"
 )
@@ -22,10 +20,18 @@ func resourceUser() *schema.Resource {
 		},
 
 		Schema: map[string]*schema.Schema{
-			"user": {
-				Type:     schema.TypeString,
-				Required: true,
-				ForceNew: true,
+			"secret_name": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				ForceNew:    true,
+				Description: "AWS secret name",
+			},
+
+			"username_key": {
+				Type:        schema.TypeString,
+				Required:    true,
+				ForceNew:    true,
+				Description: "where username is stored",
 			},
 
 			"host": {
@@ -35,26 +41,11 @@ func resourceUser() *schema.Resource {
 				Default:  "localhost",
 			},
 
-			"plaintext_password": {
+			"password_key": {
 				Type:      schema.TypeString,
-				Optional:  true,
-				Sensitive: true,
-				StateFunc: hashSum,
-			},
-
-			"password": {
-				Type:          schema.TypeString,
-				Optional:      true,
-				ConflictsWith: []string{"plaintext_password"},
-				Sensitive:     true,
-				Deprecated:    "Please use plaintext_password instead",
-			},
-
-			"auth_plugin": {
-				Type:          schema.TypeString,
-				Optional:      true,
-				ForceNew:      true,
-				ConflictsWith: []string{"plaintext_password", "password"},
+				Required:  true,
+				Sensitive: false,
+				Description: "where password is stored",
 			},
 
 			"tls_option": {
@@ -69,42 +60,23 @@ func resourceUser() *schema.Resource {
 
 func CreateUser(d *schema.ResourceData, meta interface{}) error {
 	db := meta.(*MySQLConfiguration).Db
+	secretName := d.Get("secret_name").(string)
+	region := meta.(*MySQLConfiguration).AWSRegion
 
-	var authStm string
-	var auth string
-	if v, ok := d.GetOk("auth_plugin"); ok {
-		auth = v.(string)
+	username, err := getValueFromSecret(secretName, region, d.Get("username_key").(string))
+	if err != nil {
+		return err
 	}
-
-	if len(auth) > 0 {
-		switch auth {
-		case "AWSAuthenticationPlugin":
-			authStm = " IDENTIFIED WITH AWSAuthenticationPlugin as 'RDS'"
-		case "mysql_no_login":
-			authStm = " IDENTIFIED WITH mysql_no_login"
-		}
+	password, err := getValueFromSecret(secretName, region, d.Get("password_key").(string))
+	if err != nil {
+		return err
 	}
 
 	stmtSQL := fmt.Sprintf("CREATE USER '%s'@'%s'",
-		d.Get("user").(string),
+		username,
 		d.Get("host").(string))
 
-	var password string
-	if v, ok := d.GetOk("plaintext_password"); ok {
-		password = v.(string)
-	} else {
-		password = d.Get("password").(string)
-	}
-
-	if auth == "AWSAuthenticationPlugin" && d.Get("host").(string) == "localhost" {
-		return errors.New("cannot use IAM auth against localhost")
-	}
-
-	if authStm != "" {
-		stmtSQL = stmtSQL + authStm
-	} else {
-		stmtSQL = stmtSQL + fmt.Sprintf(" IDENTIFIED BY '%s'", password)
-	}
+	stmtSQL = stmtSQL + fmt.Sprintf(" IDENTIFIED BY '%s'", password)
 
 	requiredVersion, _ := version.NewVersion("5.7.0")
 	currentVersion, err := serverVersion(db)
@@ -122,35 +94,33 @@ func CreateUser(d *schema.ResourceData, meta interface{}) error {
 		return err
 	}
 
-	user := fmt.Sprintf("%s@%s", d.Get("user").(string), d.Get("host").(string))
-	d.SetId(user)
+	userId := fmt.Sprintf("%s@%s@%s@%s", d.Get("secret_name"), d.Get("username_key").(string), d.Get("password_key").(string), d.Get("host").(string))
+	d.SetId(userId)
 
 	return nil
 }
 
 func UpdateUser(d *schema.ResourceData, meta interface{}) error {
 	db := meta.(*MySQLConfiguration).Db
-
-	var auth string
-	if v, ok := d.GetOk("auth_plugin"); ok {
-		auth = v.(string)
+	secretName := d.Get("secret_name").(string)
+	region := meta.(*MySQLConfiguration).AWSRegion
+	
+	username, err := getValueFromSecret(secretName, region, d.Get("username_key").(string))
+	if err != nil {
+		return err
 	}
 
-	if len(auth) > 0 {
-		// nothing to change, return
-		return nil
-	}
-
-	var newpw interface{}
-	if d.HasChange("plaintext_password") {
-		_, newpw = d.GetChange("plaintext_password")
-	} else if d.HasChange("password") {
-		_, newpw = d.GetChange("password")
+	var newpw string
+	if d.HasChange("password_key") {
+		newpw, err = getValueFromSecret(secretName, region, d.Get("password_key").(string))
+		if err != nil {
+			return err
+		}
 	} else {
-		newpw = nil
+		newpw = ""
 	}
 
-	if newpw != nil {
+	if newpw != "" {
 		var stmtSQL string
 
 		/* ALTER USER syntax introduced in MySQL 5.7.6 deprecates SET PASSWORD (GH-8230) */
@@ -162,14 +132,14 @@ func UpdateUser(d *schema.ResourceData, meta interface{}) error {
 		ver, _ := version.NewVersion("5.7.6")
 		if serverVersion.LessThan(ver) {
 			stmtSQL = fmt.Sprintf("SET PASSWORD FOR '%s'@'%s' = PASSWORD('%s')",
-				d.Get("user").(string),
+				username,
 				d.Get("host").(string),
-				newpw.(string))
+				newpw)
 		} else {
 			stmtSQL = fmt.Sprintf("ALTER USER '%s'@'%s' IDENTIFIED BY '%s'",
-				d.Get("user").(string),
+				username,
 				d.Get("host").(string),
-				newpw.(string))
+				newpw)
 		}
 
 		log.Println("Executing query:", stmtSQL)
@@ -189,7 +159,7 @@ func UpdateUser(d *schema.ResourceData, meta interface{}) error {
 		var stmtSQL string
 
 		stmtSQL = fmt.Sprintf("ALTER USER '%s'@'%s'  REQUIRE %s",
-			d.Get("user").(string),
+			username,
 			d.Get("host").(string),
 			fmt.Sprintf(" REQUIRE %s", d.Get("tls_option").(string)))
 
@@ -205,9 +175,16 @@ func UpdateUser(d *schema.ResourceData, meta interface{}) error {
 
 func ReadUser(d *schema.ResourceData, meta interface{}) error {
 	db := meta.(*MySQLConfiguration).Db
+	secretName := d.Get("secret_name").(string)
+	region := meta.(*MySQLConfiguration).AWSRegion
+
+	username, err := getValueFromSecret(secretName, region, d.Get("username_key").(string))
+	if err != nil {
+		return err
+	}
 
 	stmtSQL := fmt.Sprintf("SELECT USER FROM mysql.user WHERE USER='%s'",
-		d.Get("user").(string))
+		username)
 
 	log.Println("Executing statement:", stmtSQL)
 
@@ -225,14 +202,21 @@ func ReadUser(d *schema.ResourceData, meta interface{}) error {
 
 func DeleteUser(d *schema.ResourceData, meta interface{}) error {
 	db := meta.(*MySQLConfiguration).Db
+	secretName := d.Get("secret_name").(string)
+	region := meta.(*MySQLConfiguration).AWSRegion
+	
+	username, err := getValueFromSecret(secretName, region, d.Get("username_key").(string))
+	if err != nil {
+		return err
+	}
 
 	stmtSQL := fmt.Sprintf("DROP USER '%s'@'%s'",
-		d.Get("user").(string),
+		username,
 		d.Get("host").(string))
 
 	log.Println("Executing statement:", stmtSQL)
 
-	_, err := db.Exec(stmtSQL)
+	_, err = db.Exec(stmtSQL)
 	if err == nil {
 		d.SetId("")
 	}
@@ -240,29 +224,44 @@ func DeleteUser(d *schema.ResourceData, meta interface{}) error {
 }
 
 func ImportUser(d *schema.ResourceData, meta interface{}) ([]*schema.ResourceData, error) {
-	userHost := strings.SplitN(d.Id(), "@", 2)
+	region := meta.(*MySQLConfiguration).AWSRegion
 
-	if len(userHost) != 2 {
-		return nil, fmt.Errorf("wrong ID format %s (expected USER@HOST)", d.Id())
+	Ids := strings.SplitN(d.Id(), "@", 4)
+	if len(Ids) != 4 {
+		return nil, fmt.Errorf("wrong ID format %s (expected SECRET_NAME@USER_KEY@PASSWORD_KEY@HOST)", d.Id())
 	}
-
-	user := userHost[0]
-	host := userHost[1]
+	secretName := Ids[0]
+	usernameKey := Ids[1]
+	passwordKey := Ids[2]
+	host := Ids[3]
+	
+	username, err := getValueFromSecret(secretName, region, usernameKey)
+	if err != nil {
+		return nil, err
+	}
+	
+	password, err := getValueFromSecret(secretName, region, passwordKey)
+	_ = password
+	if err != nil {
+		return nil, err
+	}
 
 	db := meta.(*MySQLConfiguration).Db
 
 	var count int
-	err := db.QueryRow("SELECT COUNT(1) FROM mysql.user WHERE user = ? AND host = ?", user, host).Scan(&count)
+	err = db.QueryRow("SELECT COUNT(1) FROM mysql.user WHERE user = ? AND host = ?", username, host).Scan(&count)
 
 	if err != nil {
 		return nil, err
 	}
 
 	if count == 0 {
-		return nil, fmt.Errorf("user '%s' not found", d.Id())
+		return nil, fmt.Errorf("user from key '%s' in the secret %s not found", usernameKey, secretName)
 	}
 
-	d.Set("user", user)
+	d.Set("secret_name", secretName)
+	d.Set("username_key", usernameKey)
+	d.Set("password_key", passwordKey)
 	d.Set("host", host)
 	d.Set("tls_option", "NONE")
 

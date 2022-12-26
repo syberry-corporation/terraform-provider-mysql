@@ -31,18 +31,26 @@ func resourceGrant() *schema.Resource {
 		},
 
 		Schema: map[string]*schema.Schema{
-			"user": {
+			"secret_name": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				ForceNew:    true,
+				Description: "AWS secret name",
+			},
+
+			"username_key": {
 				Type:          schema.TypeString,
 				Optional:      true,
 				ForceNew:      true,
 				ConflictsWith: []string{"role"},
+				Description:   "where username is stored",
 			},
 
 			"role": {
 				Type:          schema.TypeString,
 				Optional:      true,
 				ForceNew:      true,
-				ConflictsWith: []string{"user", "host"},
+				ConflictsWith: []string{"username_key", "host"},
 			},
 
 			"host": {
@@ -157,6 +165,8 @@ func supportsRoles(db *sql.DB) (bool, error) {
 
 func CreateGrant(d *schema.ResourceData, meta interface{}) error {
 	db := meta.(*MySQLConfiguration).Db
+	secretName := d.Get("secret_name").(string)
+	region := meta.(*MySQLConfiguration).AWSRegion
 
 	hasRoles, err := supportsRoles(db)
 	if err != nil {
@@ -184,9 +194,14 @@ func CreateGrant(d *schema.ResourceData, meta interface{}) error {
 		return fmt.Errorf("One of privileges or roles is required")
 	}
 
-	user := d.Get("user").(string)
+	usernameKey := d.Get("username_key").(string)
 	host := d.Get("host").(string)
 	role := d.Get("role").(string)
+
+	user, err := getValueFromSecret(secretName, region, usernameKey)
+	if err != nil {
+		return err
+	}
 
 	userOrRole, isRole, err := userOrRole(user, host, role, hasRoles)
 	if err != nil {
@@ -235,14 +250,21 @@ func CreateGrant(d *schema.ResourceData, meta interface{}) error {
 
 func ReadGrant(d *schema.ResourceData, meta interface{}) error {
 	db := meta.(*MySQLConfiguration).Db
+	secretName := d.Get("secret_name").(string)
+	region := meta.(*MySQLConfiguration).AWSRegion
 
 	hasRoles, err := supportsRoles(db)
 	if err != nil {
 		return err
 	}
+	usernameKey := d.Get("username_key").(string)
+	user, err := getValueFromSecret(secretName, region, usernameKey)
+	if err != nil {
+		return err
+	}
 
 	userOrRole, _, err := userOrRole(
-		d.Get("user").(string),
+		user,
 		d.Get("host").(string),
 		d.Get("role").(string),
 		hasRoles)
@@ -282,15 +304,22 @@ func ReadGrant(d *schema.ResourceData, meta interface{}) error {
 
 func UpdateGrant(d *schema.ResourceData, meta interface{}) error {
 	db := meta.(*MySQLConfiguration).Db
+	secretName := d.Get("secret_name").(string)
+	region := meta.(*MySQLConfiguration).AWSRegion
 
 	hasRoles, err := supportsRoles(db)
-
+	if err != nil {
+		return err
+	}
+	
+	usernameKey := d.Get("username_key").(string)
+	user, err := getValueFromSecret(secretName, region, usernameKey)
 	if err != nil {
 		return err
 	}
 
 	userOrRole, _, err := userOrRole(
-		d.Get("user").(string),
+		user,
 		d.Get("host").(string),
 		d.Get("role").(string),
 		hasRoles)
@@ -357,6 +386,8 @@ func updatePrivileges(d *schema.ResourceData, db *sql.DB, user string, database 
 
 func DeleteGrant(d *schema.ResourceData, meta interface{}) error {
 	db := meta.(*MySQLConfiguration).Db
+	secretName := d.Get("secret_name").(string)
+	region := meta.(*MySQLConfiguration).AWSRegion
 
 	database := formatDatabaseName(d.Get("database").(string))
 
@@ -366,9 +397,15 @@ func DeleteGrant(d *schema.ResourceData, meta interface{}) error {
 	if err != nil {
 		return err
 	}
+	
+	usernameKey := d.Get("username_key").(string)
+	user, err := getValueFromSecret(secretName, region, usernameKey)
+	if err != nil {
+		return err
+	}
 
 	userOrRole, isRole, err := userOrRole(
-		d.Get("user").(string),
+		user,
 		d.Get("host").(string),
 		d.Get("role").(string),
 		hasRoles)
@@ -415,14 +452,20 @@ func DeleteGrant(d *schema.ResourceData, meta interface{}) error {
 }
 
 func ImportGrant(d *schema.ResourceData, meta interface{}) ([]*schema.ResourceData, error) {
-	userHost := strings.SplitN(d.Id(), "@", 2)
+	ids := strings.SplitN(d.Id(), "@", 3)
+	region := meta.(*MySQLConfiguration).AWSRegion
 
-	if len(userHost) != 2 {
-		return nil, fmt.Errorf("wrong ID format %s (expected USER@HOST)", d.Id())
+	if len(ids) != 3 {
+		return nil, fmt.Errorf("wrong ID format %s (expected SECRET_NAME@USERNAME_KEY@HOST)", d.Id())
 	}
 
-	user := userHost[0]
-	host := userHost[1]
+	secretName := ids[0]
+	usernameKey := ids[1]
+	user, err := getValueFromSecret(secretName, region, usernameKey)
+	if err != nil {
+		return nil, err
+	}
+	host := ids[2]
 
 	db := meta.(*MySQLConfiguration).Db
 
@@ -435,20 +478,21 @@ func ImportGrant(d *schema.ResourceData, meta interface{}) ([]*schema.ResourceDa
 	results := []*schema.ResourceData{}
 
 	for _, grant := range grants {
-		results = append(results, restoreGrant(user, host, grant))
+		results = append(results, restoreGrant(secretName, usernameKey, host, grant))
 	}
 
 	return results, nil
 }
 
-func restoreGrant(user string, host string, grant *MySQLGrant) *schema.ResourceData {
+func restoreGrant(secretName string, usernameKey string, host string, grant *MySQLGrant) *schema.ResourceData {
 	d := resourceGrant().Data(nil)
 
 	database := grant.Database
-	id := fmt.Sprintf("%s@%s:%s", user, host, formatDatabaseName(database))
+	id := fmt.Sprintf("%s@%s@%s:%s", secretName, usernameKey, host, formatDatabaseName(database))
 	d.SetId(id)
 
-	d.Set("user", user)
+	d.Set("username_key", usernameKey)
+	d.Set("secret_name", secretName)
 	d.Set("host", host)
 	d.Set("database", database)
 	d.Set("table", grant.Table)
